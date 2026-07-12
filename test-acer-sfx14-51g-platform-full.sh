@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Full validation suite for acer-sfx14-51g-platform v0.3.1
+# Full validation suite for acer-sfx14-51g-platform v0.4.0
 #
 # Run as a normal user from the module build directory. The script uses sudo
 # internally, records all output to a timestamped log, restores changed state,
@@ -11,7 +11,7 @@ IFS=$'\n\t'
 
 readonly MOD="acer_sfx14_51g_platform"
 readonly KO="${KO:-./acer-sfx14-51g-platform.ko}"
-readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.3.1}"
+readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.4.0}"
 readonly PDEV="/sys/bus/platform/devices/acer-sfx14-51g-platform"
 readonly PROFILE="/sys/firmware/acpi/platform_profile"
 readonly PROFILE_CHOICES="/sys/firmware/acpi/platform_profile_choices"
@@ -20,6 +20,7 @@ readonly CALIBRATION="${PDEV}/battery_calibration_mode"
 readonly ADAPTER="${PDEV}/adapter_rating_mw"
 readonly DO_SUSPEND="${DO_SUSPEND:-1}"
 readonly DO_HEALTH_TOGGLE="${DO_HEALTH_TOGGLE:-1}"
+readonly DO_MODULE_PARAM_TEST="${DO_MODULE_PARAM_TEST:-1}"
 readonly SEQUENTIAL_ROUNDS="${SEQUENTIAL_ROUNDS:-500}"
 readonly CONCURRENT_WORKERS="${CONCURRENT_WORKERS:-4}"
 readonly CONCURRENT_ROUNDS="${CONCURRENT_ROUNDS:-250}"
@@ -31,8 +32,8 @@ readonly EC_IO="${EC_IO:-/sys/kernel/debug/ec/ec0/io}"
 readonly PERM_OFFSET=$((0x45))
 
 stamp=$(date +'%Y%m%d-%H%M%S')
-readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.1-test-${stamp}.log}"
-readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.1-test-${stamp}.summary}"
+readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.4.0-test-${stamp}.log}"
+readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.4.0-test-${stamp}.summary}"
 
 started_at=""
 original_profile=""
@@ -184,6 +185,67 @@ restore_health() {
     return 1
 }
 
+
+insmod_with_health_parameter() {
+    local value=$1
+
+    if module_loaded; then
+        sudo rmmod "$MOD"
+    fi
+
+    sudo insmod "$KO" "enable_health_mode=$value"
+    check_interfaces
+}
+
+test_health_module_parameter() {
+    local observed parameter reject_output
+
+    modinfo -p "$KO" | grep -q '^enable_health_mode:' || {
+        echo 'enable_health_mode is missing from module metadata' >&2
+        return 1
+    }
+
+    insmod_with_health_parameter 1
+    observed=$(read_value "$HEALTH")
+    parameter=$(read_value "/sys/module/${MOD}/parameters/enable_health_mode")
+    printf 'parameter requested=1 exported=%s health=%s\n' "$parameter" "$observed"
+    [[ "$parameter" == 1 && "$observed" == 1 ]]
+
+    insmod_with_health_parameter 0
+    observed=$(read_value "$HEALTH")
+    parameter=$(read_value "/sys/module/${MOD}/parameters/enable_health_mode")
+    printf 'parameter requested=0 exported=%s health=%s\n' "$parameter" "$observed"
+    [[ "$parameter" == 0 && "$observed" == 0 ]]
+
+    sudo rmmod "$MOD"
+    if reject_output=$(sudo insmod "$KO" enable_health_mode=2 2>&1); then
+        echo 'Invalid enable_health_mode=2 was accepted' >&2
+        sudo rmmod "$MOD" 2>/dev/null || true
+        return 1
+    fi
+    module_loaded && {
+        echo 'Module remained loaded after rejected parameter value' >&2
+        return 1
+    }
+    printf 'expected rejection: enable_health_mode=2 returned nonzero and module stayed unloaded\n'
+
+    # Restore the original firmware state explicitly, then prove that the
+    # default/preserve value leaves that restored state untouched.
+    insmod_with_health_parameter "$original_health"
+    [[ $(read_value "$HEALTH") == "$original_health" ]]
+
+    sudo rmmod "$MOD"
+    sudo insmod "$KO"
+    check_interfaces
+    parameter=$(read_value "/sys/module/${MOD}/parameters/enable_health_mode")
+    observed=$(read_value "$HEALTH")
+    printf 'parameter omitted exported=%s health=%s expected=%s\n' \
+        "$parameter" "$observed" "$original_health"
+    [[ "$parameter" == -1 && "$observed" == "$original_health" ]]
+
+    restore_health_required=1
+}
+
 cleanup() {
     local status=${1:-$?} cleanup_failed=0
     (( cleanup_running == 0 )) || return
@@ -227,7 +289,9 @@ check_static_source() {
     [[ -r "$source" ]] || { echo 'Source file not found; skipping source checks'; return 0; }
     bad=$(grep -InE 'debugfs|misc_register|unlocked_ioctl|proc_create|ec_write|ioremap|outb|request_region' "$source" || true)
     [[ -z "$bad" ]] || { printf '%s\n' "$bad" >&2; return 1; }
-    grep -q 'MODULE_VERSION("0.3.1")' "$source"
+    grep -q 'MODULE_VERSION("0.4.0")' "$source"
+    grep -q 'module_param(enable_health_mode, int, 0444)' "$source"
+    grep -q 'static int enable_health_mode = -1;' "$source"
     ! grep -qE 'BATTERY_SET_ATTEMPTS|BATTERY_VERIFY_ATTEMPTS|response\.result' "$source"
 }
 
@@ -377,6 +441,14 @@ main() {
     [[ "$original_calibration" =~ ^[01]$ ]]
     valid_adapter_rating "$original_adapter"
 
+    if [[ "$DO_MODULE_PARAM_TEST" == 1 ]]; then
+        section 'BATTERY HEALTH MODULE PARAMETER'
+        test_health_module_parameter
+        pass 'battery-health module parameter enable/disable/reject/preserve'
+    else
+        echo 'SKIP: module-parameter test disabled with DO_MODULE_PARAM_TEST=0'
+    fi
+
     section 'GETTERS AND HWMON'
     check_temperatures_once
     check_psu_hwmon_once
@@ -516,6 +588,11 @@ main() {
     check_profile_perm_consistency final
     kernel_log_audit
     pass 'final state restoration and clean kernel log'
+
+    (( failures == 0 )) || {
+        printf 'FAIL: internal failure counter is %d\n' "$failures" >&2
+        return 1
+    }
 
     printf '\nALL TESTS PASSED: %d checks\n' "$passes"
 }

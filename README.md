@@ -85,6 +85,52 @@ echo 0 | sudo tee \
 
 ---
 
+### Optional battery-health module parameter
+
+By default, loading the driver **does not change** the existing battery-health
+setting. The optional `enable_health_mode` parameter can explicitly request a
+state while the driver probes:
+
+```text
+enable_health_mode=-1  preserve the current firmware state (default)
+enable_health_mode=0   disable battery health mode on load
+enable_health_mode=1   enable battery health mode on load
+```
+
+One-time examples:
+
+```bash
+sudo modprobe acer-sfx14-51g-platform enable_health_mode=1
+sudo modprobe acer-sfx14-51g-platform enable_health_mode=0
+```
+
+If the module is already loaded, unload it first or use the runtime sysfs
+attribute instead. To apply the option automatically on your own machine, create
+a local modprobe configuration file (this repository does not install one):
+
+```bash
+sudo tee /etc/modprobe.d/acer-sfx14-51g-platform.conf >/dev/null <<'EOF'
+options acer-sfx14-51g-platform enable_health_mode=1
+EOF
+```
+
+The packaged `modules-load.d` entry will then load the module at boot and
+`modprobe` will supply the option.
+
+Verify the parameter and resulting state:
+
+```bash
+modinfo -p acer-sfx14-51g-platform
+cat /sys/module/acer_sfx14_51g_platform/parameters/enable_health_mode
+cat /sys/bus/platform/devices/acer-sfx14-51g-platform/battery_health_mode
+```
+
+Remove the local policy and return to preserve-on-load behavior with:
+
+```bash
+sudo rm /etc/modprobe.d/acer-sfx14-51g-platform.conf
+```
+
 ### Battery Calibration Mode
 
 Exposes Acer's battery calibration control.
@@ -234,7 +280,7 @@ No Windows software is required.
 
 Arch packaging is maintained separately in
 [`ciao986/acer-sfx14-51g-platform-pkgbuild`](https://github.com/ciao986/acer-sfx14-51g-platform-pkgbuild).
-The packaging repository currently builds the tagged **0.3.1** release as the
+The packaging repository builds the latest release as the
 `acer-sfx14-51g-platform-dkms` package.
 
 Install the headers matching every kernel for which the module should be built.

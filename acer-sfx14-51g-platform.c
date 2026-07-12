@@ -102,6 +102,17 @@ struct acer_sfx14_data {
 
 static struct platform_device *acer_sfx14_pdev;
 
+/*
+ * Optional boot/load policy for battery health mode:
+ *  -1: preserve the firmware state (default)
+ *   0: disable battery health mode during probe
+ *   1: enable battery health mode during probe
+ */
+static int enable_health_mode = -1;
+module_param(enable_health_mode, int, 0444);
+MODULE_PARM_DESC(enable_health_mode,
+	"Battery health mode on load: -1 preserve (default), 0 disable, 1 enable");
+
 static const struct dmi_system_id acer_sfx14_dmi[] = {
 	{
 		.ident = "Acer Swift SFX14-51G",
@@ -371,7 +382,7 @@ static int acer_bh_temp_retry_locked(u8 selector, long *millideg)
 	return ret;
 }
 
-static int acer_acpi_temp_locked(const char *path, long *millideg)
+static int acer_acpi_temp_locked(acpi_string path, long *millideg)
 {
 	unsigned long long decikelvin;
 	acpi_status status;
@@ -392,7 +403,7 @@ static int acer_acpi_temp_locked(const char *path, long *millideg)
 	return 0;
 }
 
-static int acer_acpi_temp_retry_locked(const char *path, long *millideg)
+static int acer_acpi_temp_retry_locked(acpi_string path, long *millideg)
 {
 	int ret;
 
@@ -675,6 +686,24 @@ static int acer_sfx14_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(data->hwmon_dev),
 				     "hwmon registration failed\n");
 
+	if (enable_health_mode >= 0) {
+		if (!data->health_available)
+			return dev_err_probe(&pdev->dev, -EOPNOTSUPP,
+					     "battery health mode unavailable\n");
+
+		mutex_lock(&data->firmware_lock);
+		ret = acer_battery_set_locked(data, BATTERY_HEALTH_BIT,
+					      enable_health_mode == 1);
+		mutex_unlock(&data->firmware_lock);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "failed to apply enable_health_mode=%d\n",
+					     enable_health_mode);
+
+		dev_info(&pdev->dev, "battery health mode requested on load: %d\n",
+			 enable_health_mode);
+	}
+
 	dev_info(&pdev->dev, "initialized: profile, battery controls, hwmon, adapter rating\n");
 	return 0;
 }
@@ -689,6 +718,11 @@ static struct platform_driver acer_sfx14_driver = {
 static int __init acer_sfx14_init(void)
 {
 	int ret;
+
+	if (enable_health_mode < -1 || enable_health_mode > 1) {
+		pr_err("enable_health_mode must be -1, 0, or 1\n");
+		return -EINVAL;
+	}
 
 	if (!dmi_first_match(acer_sfx14_dmi))
 		return -ENODEV;
@@ -723,7 +757,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.3.1");
+MODULE_VERSION("0.4.0");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
