@@ -8,6 +8,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
+#include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/hwmon.h>
 #include <linux/init.h>
@@ -107,7 +108,7 @@ MODULE_DEVICE_TABLE(dmi, acer_sfx14_dmi);
 
 static int acer_wmi_eval_buffer(const char *guid, u32 method,
 				const void *request, size_t request_len,
-				void *response, size_t response_len, bool exact_len)
+				void *response, size_t response_len)
 {
 	struct acpi_buffer input = {
 		.length = request_len,
@@ -134,12 +135,7 @@ static int acer_wmi_eval_buffer(const char *guid, u32 method,
 		ret = -EPROTO;
 		goto out;
 	}
-	if (!obj->buffer.pointer ||
-	    (exact_len ? obj->buffer.length != response_len :
-			 obj->buffer.length < response_len)) {
-		pr_err("WMI %s method %u returned %u bytes, expected %s%zu\n",
-		       guid, method, obj->buffer.length,
-		       exact_len ? "exactly " : "at least ", response_len);
+	if (!obj->buffer.pointer || obj->buffer.length != response_len) {
 		ret = -EMSGSIZE;
 		goto out;
 	}
@@ -161,7 +157,7 @@ static int acer_battery_get_locked(struct acer_sfx14_data *data,
 
 	ret = acer_wmi_eval_buffer(ACER_BATTERY_GUID, BATTERY_GET_METHOD,
 				   &request, sizeof(request),
-				   &response, sizeof(response), true);
+				   &response, sizeof(response));
 	if (ret)
 		return ret;
 
@@ -188,7 +184,7 @@ static int acer_battery_set_locked(struct acer_sfx14_data *data,
 
 	ret = acer_wmi_eval_buffer(ACER_BATTERY_GUID, BATTERY_SET_METHOD,
 				   &request, sizeof(request),
-				   &response, sizeof(response), true);
+				   &response, sizeof(response));
 	if (ret)
 		return ret;
 	if (response.result)
@@ -212,7 +208,7 @@ static int acer_profile_eval_locked(u32 method, u8 profile_id,
 
 	ret = acer_wmi_eval_buffer(ACER_PROFILE_GUID, method,
 				   &request, sizeof(request),
-				   response, sizeof(*response), false);
+				   response, sizeof(*response));
 	if (ret)
 		return ret;
 	return response->status ? -EIO : 0;
@@ -317,7 +313,7 @@ static int acer_bh_temp_locked(u8 selector, long *millideg)
 
 	ret = acer_wmi_eval_buffer(ACER_BH_GUID, BH_GET_SYS_INFO,
 				   request, sizeof(request),
-				   response, sizeof(response), true);
+				   response, sizeof(response));
 	if (ret)
 		return ret;
 	if (response[0])
@@ -352,8 +348,15 @@ static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		return -EOPNOTSUPP;
 	mutex_lock(&data->firmware_lock);
 	ret = acer_bh_temp_locked(selectors[channel], value);
-	if (ret == -ERANGE || ret == -EIO)
+	if (ret == -ERANGE || ret == -EIO) {
+		/* TSR1 can transiently read as zero; do not publish bogus 0 C. */
+		usleep_range(5000, 7000);
 		ret = acer_bh_temp_locked(selectors[channel], value);
+	}
+	if (ret == -ERANGE || ret == -EIO) {
+		usleep_range(10000, 12000);
+		ret = acer_bh_temp_locked(selectors[channel], value);
+	}
 	mutex_unlock(&data->firmware_lock);
 	return ret;
 }
@@ -553,12 +556,6 @@ static int __init acer_sfx14_init(void)
 		platform_driver_unregister(&acer_sfx14_driver);
 		return ret;
 	}
-	if (!platform_get_drvdata(acer_sfx14_pdev)) {
-		pr_err("platform device was created but probe did not bind\n");
-		platform_device_unregister(acer_sfx14_pdev);
-		platform_driver_unregister(&acer_sfx14_driver);
-		return -ENODEV;
-	}
 	return 0;
 }
 
@@ -574,7 +571,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.1.3");
+MODULE_VERSION("0.1.4");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
