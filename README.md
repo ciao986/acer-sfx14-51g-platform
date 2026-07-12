@@ -230,6 +230,60 @@ No Windows software is required.
 
 ---
 
+## Installation on Arch Linux
+
+Arch packaging is maintained separately in
+[`ciao986/acer-sfx14-51g-platform-pkgbuild`](https://github.com/ciao986/acer-sfx14-51g-platform-pkgbuild).
+The packaging repository currently builds the tagged **0.3.1** release as the
+`acer-sfx14-51g-platform-dkms` package.
+
+Install the headers matching every kernel for which the module should be built.
+For the standard Arch kernel:
+
+```bash
+sudo pacman -S --needed base-devel dkms linux-headers
+```
+
+Clone the packaging repository and build from there:
+
+```bash
+git clone https://github.com/ciao986/acer-sfx14-51g-platform-pkgbuild.git
+cd acer-sfx14-51g-platform-pkgbuild
+makepkg -si
+```
+
+For `linux-lts`, `linux-zen`, or another kernel, install its matching header
+package before building. The package downloads and verifies the tagged upstream
+source archive, and DKMS rebuilds the module when installed kernels are updated.
+
+The package also installs:
+
+```text
+/usr/lib/modules-load.d/30-acer-sfx14-51g-platform.conf
+```
+
+This makes `systemd-modules-load` request the driver at boot. The module remains
+DMI-gated and refuses to initialize on unsupported systems. To load it
+immediately after installation without rebooting:
+
+```bash
+sudo modprobe acer-sfx14-51g-platform
+```
+
+Verify the installation:
+
+```bash
+dkms status
+modinfo acer-sfx14-51g-platform
+lsmod | grep acer_sfx14_51g_platform
+```
+
+Uninstall with:
+
+```bash
+sudo pacman -Rns acer-sfx14-51g-platform-dkms
+```
+
 ## Build
 
 ```bash
