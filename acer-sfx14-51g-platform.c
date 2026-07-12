@@ -350,6 +350,23 @@ static int acer_bh_temp_locked(u8 selector, long *millideg)
 	return 0;
 }
 
+static int acer_bh_temp_retry_locked(u8 selector, long *millideg)
+{
+	int ret;
+
+	ret = acer_bh_temp_locked(selector, millideg);
+	if (ret == -ERANGE || ret == -EIO) {
+		usleep_range(5000, 7000);
+		ret = acer_bh_temp_locked(selector, millideg);
+	}
+	if (ret == -ERANGE || ret == -EIO) {
+		usleep_range(10000, 12000);
+		ret = acer_bh_temp_locked(selector, millideg);
+	}
+
+	return ret;
+}
+
 static umode_t acer_hwmon_is_visible(const void *drvdata,
 				     enum hwmon_sensor_types type,
 				     u32 attr, int channel)
@@ -372,16 +389,8 @@ static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	if (type != hwmon_temp || attr != hwmon_temp_input || channel >= ARRAY_SIZE(selectors))
 		return -EOPNOTSUPP;
 	mutex_lock(&data->firmware_lock);
-	ret = acer_bh_temp_locked(selectors[channel], value);
-	if (ret == -ERANGE || ret == -EIO) {
-		/* TSR1 can transiently read as zero; do not publish bogus 0 C. */
-		usleep_range(5000, 7000);
-		ret = acer_bh_temp_locked(selectors[channel], value);
-	}
-	if (ret == -ERANGE || ret == -EIO) {
-		usleep_range(10000, 12000);
-		ret = acer_bh_temp_locked(selectors[channel], value);
-	}
+	/* TSR1 can transiently read as zero; do not publish bogus 0 C. */
+	ret = acer_bh_temp_retry_locked(selectors[channel], value);
 
 	if (!ret) {
 		data->temp_cache[channel] = *value;
@@ -546,7 +555,7 @@ static int acer_sfx14_probe(struct platform_device *pdev)
 	if (!ret)
 		ret = acer_battery_get_locked(data, NULL, NULL);
 	if (!ret)
-		ret = acer_bh_temp_locked(BH_TEMP_CPU_SIDE, &temp);
+		ret = acer_bh_temp_retry_locked(BH_TEMP_CPU_SIDE, &temp);
 	mutex_unlock(&data->firmware_lock);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "firmware getter self-test failed\n");
@@ -615,7 +624,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.2.0");
+MODULE_VERSION("0.2.1");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
