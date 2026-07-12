@@ -66,8 +66,8 @@ struct acer_battery_set_request {
 } __packed;
 
 struct acer_battery_set_response {
-	u8 result;
-	u8 reserved[3];
+	u8 firmware_return;
+	u8 reserved;
 } __packed;
 
 struct acer_profile_request {
@@ -188,21 +188,40 @@ static int acer_battery_set_locked(struct acer_sfx14_data *data,
 	bool health, calibration, observed;
 	int ret;
 
+	/*
+	 * A successful
+	 * WMI transaction plus a correctly shaped response means the command
+	 * was accepted.  The first byte is firmware-owned return data, not a
+	 * reliable errno; treating a nonzero value as -EIO caused false failures
+	 * even when a following getter showed that the requested state applied.
+	 */
 	ret = acer_wmi_eval_buffer(ACER_BATTERY_GUID, BATTERY_SET_METHOD,
 				   &request, sizeof(request),
 				   &response, sizeof(response));
 	if (ret)
 		return ret;
-	if (response.result)
-		return -EIO;
 
+	/* Refresh availability/state, but do not turn firmware settling into a
+	 * failed sysfs write. Every show operation performs a fresh getter too.
+	 */
 	ret = acer_battery_get_locked(data, &health, &calibration);
 	if (ret)
 		return ret;
+
 	observed = function == BATTERY_HEALTH_BIT ? health : calibration;
-	return observed == enabled ? 0 : -EIO;
+	if (observed != enabled)
+		dev_dbg(data->dev,
+			"battery function %#x requested %u, immediate read-back %u (firmware return %#x)\n",
+			function, enabled, observed, response.firmware_return);
+
+	return 0;
 }
 
+/*
+ * APGe/WMAA profile transport
+ * exposed here through the standard Linux platform_profile subsystem.  Keep
+ * the minimum-length response rule because this firmware may append padding.
+ */
 static int acer_profile_eval_locked(u32 method, u8 profile_id,
 				    struct acer_profile_response *response)
 {
@@ -596,7 +615,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.1.6");
+MODULE_VERSION("0.2.0");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
