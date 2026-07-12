@@ -99,13 +99,21 @@ cat /sys/bus/platform/devices/acer-sfx14-51g-platform/battery_calibration_mode
 
 ### Firmware Temperature Sensors
 
-Three firmware-backed temperature sensors are exported through hwmon:
+Four firmware-backed temperature sensors are exported through hwmon:
 
-| Sensor | Description |
-|----------|----------|
-| CPU-side | CPU-side thermal sensor |
-| GPU-side | GPU-side thermal sensor |
-| Internal ambient | Internal chassis/ambient sensor |
+| Sensor | Firmware source | Description |
+|---|---|---|
+| CPU-side | `SEN1` / `TSR1` | CPU-side thermal sensor |
+| GPU-side | `SEN2` / `TSR2` | Discrete-GPU-side thermal sensor |
+| Internal ambient | `SEN4` / `TSR7` | Internal chassis/ambient sensor |
+| Charger temperature | `SEN3` / `TSR3` | Firmware-labelled charger/power-area temperature |
+
+The four underlying firmware participants were already visible to Linux through ACPI thermal zones named only `SEN1`, `SEN2`, `SEN3`, and `SEN4` under `/sys/class/thermal/`. Those generic names and changing `thermal_zoneN` paths made them difficult to identify and awkward in normal monitoring tools.
+This driver (re-)exposes them under one hwmon device and gives them stable, descriptive labels.
+
+The CPU, GPU, and ambient channels use Acer's validated BH/WMI temperature getter, with range checking, retries, and a short last-good cache for transient bad readings. Acer's BH interface does not expose `TSR3`, so the charger channel uses the firmware-defined `\_SB.PC00.LPCB.H_EC.SEN3._TMP` ACPI method instead. It receives the same range/retry/cache policy before being published through hwmon.
+
+The firmware literally describes `SEN3` as **“Charger temperature.”** This is a temperature of the charger/power area. During testing it responded slowly to sustained CPU and GPU power, which makes it useful for observing heat around that region.
 
 These appear automatically through standard tools such as:
 
@@ -116,9 +124,10 @@ sensors
 Example:
 
 ```text
-CPU-side:          62.0°C
-GPU-side:          61.0°C
-Internal ambient:  50.0°C
+CPU-side:            62.0°C
+GPU-side:            61.0°C
+Internal ambient:    50.0°C
+Charger temperature: 70.0°C
 ```
 
 ---
@@ -213,7 +222,7 @@ Examples:
 | Firmware feature | Linux interface |
 |-----------------|----------------|
 | Performance modes | `platform_profile` |
-| Temperature telemetry | `hwmon` |
+| Temperature telemetry | `hwmon` (consolidated from ACPI/BH firmware sources) |
 | Charger recognition | `hwmon` + sysfs |
 | Battery care | sysfs |
 

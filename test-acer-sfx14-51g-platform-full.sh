@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Full validation suite for acer-sfx14-51g-platform v0.3.0
+# Full validation suite for acer-sfx14-51g-platform v0.3.1
 #
 # Run as a normal user from the module build directory. The script uses sudo
 # internally, records all output to a timestamped log, restores changed state,
@@ -11,7 +11,7 @@ IFS=$'\n\t'
 
 readonly MOD="acer_sfx14_51g_platform"
 readonly KO="${KO:-./acer-sfx14-51g-platform.ko}"
-readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.3.0}"
+readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.3.1}"
 readonly PDEV="/sys/bus/platform/devices/acer-sfx14-51g-platform"
 readonly PROFILE="/sys/firmware/acpi/platform_profile"
 readonly PROFILE_CHOICES="/sys/firmware/acpi/platform_profile_choices"
@@ -31,8 +31,8 @@ readonly EC_IO="${EC_IO:-/sys/kernel/debug/ec/ec0/io}"
 readonly PERM_OFFSET=$((0x45))
 
 stamp=$(date +'%Y%m%d-%H%M%S')
-readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.0-test-${stamp}.log}"
-readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.0-test-${stamp}.summary}"
+readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.1-test-${stamp}.log}"
+readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.1-test-${stamp}.summary}"
 
 started_at=""
 original_profile=""
@@ -227,7 +227,7 @@ check_static_source() {
     [[ -r "$source" ]] || { echo 'Source file not found; skipping source checks'; return 0; }
     bad=$(grep -InE 'debugfs|misc_register|unlocked_ioctl|proc_create|ec_write|ioremap|outb|request_region' "$source" || true)
     [[ -z "$bad" ]] || { printf '%s\n' "$bad" >&2; return 1; }
-    grep -q 'MODULE_VERSION("0.3.0")' "$source"
+    grep -q 'MODULE_VERSION("0.3.1")' "$source"
     ! grep -qE 'BATTERY_SET_ATTEMPTS|BATTERY_VERIFY_ATTEMPTS|response\.result' "$source"
 }
 
@@ -249,9 +249,16 @@ check_state_unchanged_except_health() {
 
 check_temperatures_once() {
     local n label value
+    local -a expected_labels=(
+        "CPU-side"
+        "GPU-side"
+        "Internal ambient"
+        "Charger temperature"
+    )
     find_hwmon
-    for n in 1 2 3; do
+    for n in 1 2 3 4; do
         label=$(read_value "$hwmon/temp${n}_label")
+        [[ "$label" == "${expected_labels[n-1]}" ]]
         value=$(read_value "$hwmon/temp${n}_input")
         [[ "$value" =~ ^[0-9]+$ ]]
         (( value >= 10000 && value <= 120000 ))
@@ -278,7 +285,7 @@ sequential_stress() {
     local i n value count=0
     find_hwmon
     for ((i=1; i<=SEQUENTIAL_ROUNDS; i++)); do
-        for n in 1 2 3; do
+        for n in 1 2 3 4; do
             value=$(read_value "$hwmon/temp${n}_input")
             [[ "$value" =~ ^[0-9]+$ ]]
             (( value >= 10000 && value <= 120000 ))
@@ -304,6 +311,7 @@ concurrent_stress() {
                 cat "$hwmon/temp1_input" >/dev/null &&
                 cat "$hwmon/temp2_input" >/dev/null &&
                 cat "$hwmon/temp3_input" >/dev/null &&
+                cat "$hwmon/temp4_input" >/dev/null &&
                 cat "$PROFILE" >/dev/null &&
                 cat "$HEALTH" >/dev/null &&
                 cat "$CALIBRATION" >/dev/null &&
@@ -492,7 +500,9 @@ main() {
         [[ -d "$PDEV" ]]
         cat "$PROFILE" "$HEALTH" "$CALIBRATION" "$ADAPTER" >/dev/null
         find_hwmon
-        cat "$hwmon/power1_input" >/dev/null
+        cat "$hwmon/temp1_input" "$hwmon/temp2_input" \
+            "$hwmon/temp3_input" "$hwmon/temp4_input" \
+            "$hwmon/power1_input" >/dev/null
     done
     pass "${LOAD_CYCLES} unload/load cycles"
 

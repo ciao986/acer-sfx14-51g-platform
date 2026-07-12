@@ -47,6 +47,7 @@
 #define BH_TEMP_GPU_SIDE 0x0a
 
 #define ACER_ARTG_PATH "\\_SB.TPWR.ARTG"
+#define ACER_CHARGER_TEMP_PATH "\\_SB.PC00.LPCB.H_EC.SEN3._TMP"
 #define ACER_ADAPTER_RATING_MAX_MW 255000ULL
 
 struct acer_battery_get_request {
@@ -94,9 +95,9 @@ struct acer_sfx14_data {
 	struct device *hwmon_dev;
 	bool health_available;
 	bool calibration_available;
-	long temp_cache[3];
-	unsigned long temp_cache_jiffies[3];
-	bool temp_cache_valid[3];
+	long temp_cache[4];
+	unsigned long temp_cache_jiffies[4];
+	bool temp_cache_valid[4];
 };
 
 static struct platform_device *acer_sfx14_pdev;
@@ -370,6 +371,44 @@ static int acer_bh_temp_retry_locked(u8 selector, long *millideg)
 	return ret;
 }
 
+static int acer_acpi_temp_locked(const char *path, long *millideg)
+{
+	unsigned long long decikelvin;
+	acpi_status status;
+	long value;
+
+	status = acpi_evaluate_integer(NULL, path, NULL, &decikelvin);
+	if (ACPI_FAILURE(status))
+		return -EIO;
+
+	/* ACPI _TMP values are in tenths of kelvin. */
+	if (decikelvin > LONG_MAX / 100)
+		return -ERANGE;
+	value = (long)decikelvin * 100L - 273150L;
+	if (value < 10000 || value > 120000)
+		return -ERANGE;
+
+	*millideg = value;
+	return 0;
+}
+
+static int acer_acpi_temp_retry_locked(const char *path, long *millideg)
+{
+	int ret;
+
+	ret = acer_acpi_temp_locked(path, millideg);
+	if (ret == -ERANGE || ret == -EIO) {
+		usleep_range(5000, 7000);
+		ret = acer_acpi_temp_locked(path, millideg);
+	}
+	if (ret == -ERANGE || ret == -EIO) {
+		usleep_range(10000, 12000);
+		ret = acer_acpi_temp_locked(path, millideg);
+	}
+
+	return ret;
+}
+
 static int acer_adapter_rating_mw_locked(unsigned long *rating_mw)
 {
 	unsigned long long value;
@@ -395,7 +434,7 @@ static umode_t acer_hwmon_is_visible(const void *drvdata,
 				     u32 attr, int channel)
 {
 	if (type == hwmon_temp && (attr == hwmon_temp_input ||
-				    attr == hwmon_temp_label) && channel < 3)
+				    attr == hwmon_temp_label) && channel < 4)
 		return 0444;
 	if (type == hwmon_power && (attr == hwmon_power_input ||
 				     attr == hwmon_power_label) && channel == 0)
@@ -425,11 +464,14 @@ static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		return 0;
 	}
 
-	if (type != hwmon_temp || attr != hwmon_temp_input || channel >= ARRAY_SIZE(selectors))
+	if (type != hwmon_temp || attr != hwmon_temp_input || channel >= 4)
 		return -EOPNOTSUPP;
 	mutex_lock(&data->firmware_lock);
-	/* TSR1 can transiently read as zero; do not publish bogus 0 C. */
-	ret = acer_bh_temp_retry_locked(selectors[channel], value);
+	/* Preserve temp1-temp3 ABI; temp4 is firmware SEN3/TSR3. */
+	if (channel < ARRAY_SIZE(selectors))
+		ret = acer_bh_temp_retry_locked(selectors[channel], value);
+	else
+		ret = acer_acpi_temp_retry_locked(ACER_CHARGER_TEMP_PATH, value);
 
 	if (!ret) {
 		data->temp_cache[channel] = *value;
@@ -453,7 +495,7 @@ static int acer_hwmon_read_string(struct device *dev,
 				  const char **str)
 {
 	static const char * const labels[] = {
-		"CPU-side", "GPU-side", "Internal ambient",
+		"CPU-side", "GPU-side", "Internal ambient", "Charger temperature",
 	};
 
 	if (type == hwmon_power && attr == hwmon_power_label && channel == 0) {
@@ -474,6 +516,7 @@ static const struct hwmon_ops acer_hwmon_ops = {
 
 static const struct hwmon_channel_info * const acer_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(temp,
+		HWMON_T_INPUT | HWMON_T_LABEL,
 		HWMON_T_INPUT | HWMON_T_LABEL,
 		HWMON_T_INPUT | HWMON_T_LABEL,
 		HWMON_T_INPUT | HWMON_T_LABEL),
@@ -610,6 +653,8 @@ static int acer_sfx14_probe(struct platform_device *pdev)
 		ret = acer_battery_get_locked(data, NULL, NULL);
 	if (!ret)
 		ret = acer_bh_temp_retry_locked(BH_TEMP_CPU_SIDE, &temp);
+	if (!ret)
+		ret = acer_acpi_temp_retry_locked(ACER_CHARGER_TEMP_PATH, &temp);
 	mutex_unlock(&data->firmware_lock);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "firmware getter self-test failed\n");
@@ -678,7 +723,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.3.0");
+MODULE_VERSION("0.3.1");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
