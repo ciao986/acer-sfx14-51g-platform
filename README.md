@@ -1,18 +1,225 @@
-# acer-sfx14-51g-platform v0.1.0
+# Acer Swift SFX14-51G Linux Platform Driver
 
-A deliberately model-specific out-of-tree Linux platform driver for the Acer Swift SFX14-51G.
+Bring back Acer firmware features on Linux.
 
-## Current features
+This driver exposes several platform features present in the firmware of the Acer Swift SFX14-51G that are normally only accessible through Acer software on Windows.
 
-- Standard `platform_profile`: `quiet`, `balanced`, `performance`.
-- `battery_health_mode` and `battery_calibration_mode`, both read/write with firmware read-back verification.
-- `adapter_rating_mw` read-only (`100000`, nominal adapter capability, not live consumption).
-- hwmon temperatures: CPU-side, GPU-side, Internal ambient.
-- Exact Acer / Swift SFX14-51G DMI gate and fixed WMI methods only.
+It provides standard Linux platform profiles, battery-care controls, firmware temperature sensors, and charger recognition through normal kernel interfaces instead of vendor utilities.
 
-## Explicitly absent
+The goal is simple:
 
-No fan control, no tachometer claims, no raw EC access, no arbitrary WMI calls, no debugfs command interface, and no TSR5/TSR6 duplicate CPU/GPU-core sensors.
+> Make the Acer Swift X (the SFX14-51G variant, mind you 😄) behave like an Acer Swift X under Linux.
+
+---
+
+## Disclaimer
+
+This project was heavily "vibe-coded" with the assistance of Microsoft Copilot and GPT-based models.
+
+Every exposed feature was subsequently verified through:
+
+- ACPI analysis,
+- firmware inspection,
+- runtime validation,
+- repeated real-hardware testing.
+
+Nevertheless:
+
+- this is an out-of-tree kernel module;
+- it is not endorsed by Acer;
+- it has not been reviewed by kernel maintainers;
+- mistakes are possible.
+
+Use at your own risk.
+
+Keep a known-good kernel available and avoid performing firmware experiments on a machine you cannot afford to recover.
+
+## Features
+
+### Platform profiles
+
+Exposes the firmware's built-in performance modes through the standard Linux `platform_profile` interface:
+
+- Quiet
+- Balanced
+- Performance
+
+Compatible with desktop environments and tools that support the kernel platform-profile API.
+
+```bash
+cat /sys/firmware/acpi/platform_profile_choices
+cat /sys/firmware/acpi/platform_profile
+```
+
+Example:
+
+```bash
+echo performance | sudo tee /sys/firmware/acpi/platform_profile
+```
+
+---
+
+### Battery Health Mode
+
+Exposes Acer's battery-preservation feature.
+
+When enabled, charging is limited by firmware to reduce long-term battery wear.
+
+```bash
+cat /sys/bus/platform/devices/acer-sfx14-51g-platform/battery_health_mode
+```
+
+Enable:
+
+```bash
+echo 1 | sudo tee \
+/sys/bus/platform/devices/acer-sfx14-51g-platform/battery_health_mode
+```
+
+Disable:
+
+```bash
+echo 0 | sudo tee \
+/sys/bus/platform/devices/acer-sfx14-51g-platform/battery_health_mode
+```
+
+---
+
+### Battery Calibration Mode
+
+Exposes Acer's battery calibration control.
+
+```bash
+cat /sys/bus/platform/devices/acer-sfx14-51g-platform/battery_calibration_mode
+```
+
+**Warning:** this may start a firmware-managed battery calibration workflow. Do not toggle it casually.
+
+---
+
+### Firmware Temperature Sensors
+
+Three firmware-backed temperature sensors are exported through hwmon:
+
+| Sensor | Description |
+|----------|----------|
+| CPU-side | CPU-side thermal sensor |
+| GPU-side | GPU-side thermal sensor |
+| Internal ambient | Internal chassis/ambient sensor |
+
+These appear automatically through standard tools such as:
+
+```bash
+sensors
+```
+
+Example:
+
+```text
+CPU-side:          62.0°C
+GPU-side:          61.0°C
+Internal ambient:  50.0°C
+```
+
+---
+
+### Charger Recognition
+
+The driver reads the charger rating recognized by firmware.
+
+This is **not system power consumption**.
+
+This is the power capability of the connected AC adapter.
+
+Example:
+
+```text
+100 W charger -> 100000 mW
+65 W charger  ->  65000 mW
+No charger    ->      0 mW
+```
+
+Platform device attribute:
+
+```bash
+cat /sys/bus/platform/devices/acer-sfx14-51g-platform/adapter_rating_mw
+```
+
+The same value is also exposed through hwmon:
+
+```text
+power1_label = Connected PSU rating
+power1_input = rating in microwatts
+```
+
+Example:
+
+```text
+100000000 µW = 100 W
+```
+
+---
+
+## What this driver does NOT do
+
+Intentionally excluded:
+
+- Fan control
+  - There are mentions of fan control in the ACPI code but the exposed fan control interface seems to reject every request
+- Raw embedded-controller write access
+  - This works through WMI rather than using EC calls
+- Arbitrary firmware calls
+- Overclocking
+- Hidden Acer features that were not decoded and validated
+- USB charging controls
+  - Not implemented as (I think) it's already in the BIOS
+- Predator-specific interfaces
+  - They don't work on this model
+- Unsupported Swift models
+
+---
+
+## Supported Hardware
+
+Currently supported:
+
+```text
+Acer Swift SFX14-51G
+```
+
+The driver is intentionally DMI-gated and will refuse to bind on other systems.
+
+This is deliberate.
+
+Many Acer laptops use similar names while exposing completely different firmware interfaces.
+
+---
+
+## Why this driver exists
+
+During investigation of missing Linux support for the Swift SFX14-51G, several firmware interfaces were discovered that Acer uses on Windows for:
+
+- platform performance modes,
+- battery-care features,
+- thermal telemetry,
+- charger identification.
+
+These interfaces were reverse-engineered from ACPI tables and validated on real hardware.
+
+The resulting implementation exposes those capabilities through normal Linux interfaces whenever possible.
+
+Examples:
+
+| Firmware feature | Linux interface |
+|-----------------|----------------|
+| Performance modes | `platform_profile` |
+| Temperature telemetry | `hwmon` |
+| Charger recognition | `hwmon` + sysfs |
+| Battery care | sysfs |
+
+No Windows software is required.
+
+---
 
 ## Build
 
@@ -20,72 +227,92 @@ No fan control, no tachometer claims, no raw EC access, no arbitrary WMI calls, 
 make
 ```
 
-The expected module is:
+Expected output:
 
 ```text
 acer-sfx14-51g-platform.ko
 ```
 
-## Critical pre-test step
+---
 
-The old experimental module owns overlapping interfaces. Remove it before loading this driver:
+## Loading
+
+Before loading this driver, remove conflicting modules if present, e.g.:
 
 ```bash
-sudo rmmod acer_wmi_ext 2>/dev/null || sudo rmmod acer-wmi-ext 2>/dev/null || true
-lsmod | grep -E 'acer[_-]wmi[_-]ext|acer_sfx14_51g_platform'
+sudo rmmod acer-wmi-ext 2>/dev/null || true
 ```
 
-Do **not** unload the mainline `acer_wmi` driver unless a later test proves a conflict; this module is intended to coexist with it.
-
-## First load: observe only
+Load:
 
 ```bash
 sudo insmod ./acer-sfx14-51g-platform.ko
-dmesg --level=err,warn,info | tail -80
 ```
 
-Inspect without writing anything:
+Verify:
 
 ```bash
-cat /sys/firmware/acpi/platform_profile_choices
-cat /sys/firmware/acpi/platform_profile
+lsmod | grep acer_sfx14_51g_platform
+```
 
+Inspect:
+
+```bash
 pdev=/sys/bus/platform/devices/acer-sfx14-51g-platform
+
 cat "$pdev/battery_health_mode"
 cat "$pdev/battery_calibration_mode"
 cat "$pdev/adapter_rating_mw"
 
-sensors
-find /sys/class/hwmon -maxdepth 2 -name name -exec sh -c '
-  for f; do printf "%s: " "$f"; cat "$f"; done
-' sh {} + | grep -B1 -A1 acer_sfx14_51g
-```
-
-Unload test:
-
-```bash
-sudo rmmod acer_sfx14_51g_platform
-dmesg --level=err,warn,info | tail -40
-```
-
-## Only after getter-only inspection succeeds
-
-Profile writes use the standard interface:
-
-```bash
-echo quiet | sudo tee /sys/firmware/acpi/platform_profile
 cat /sys/firmware/acpi/platform_profile
 ```
 
-Battery writes are strict booleans and are read back from firmware before success is returned:
+---
 
-```bash
-echo 1 | sudo tee "$pdev/battery_health_mode"
-cat "$pdev/battery_health_mode"
+## Validation
+
+The repository includes a comprehensive validation script:
+
+```text
+test-acer-sfx14-51g-platform-full.sh
 ```
 
-Do not toggle calibration casually; it may initiate a battery calibration workflow.
+It exercises:
 
-## Known development caveat
+- platform profiles,
+- battery controls,
+- charger recognition,
+- hwmon sensors,
+- concurrent access,
+- suspend/resume,
+- module unload/load cycles,
+- kernel log auditing,
+- state restoration.
 
-Kernel subsystem APIs evolve. This first draft targets the platform-profile API shape already compiling in the existing local `acer-wmi-ext` source. If the Arch kernel headers report API differences, preserve the compiler output and patch against the exact 7.0.14 headers rather than weakening validation.
+Run it after every modification:
+
+```bash
+chmod +x test-acer-sfx14-51g-platform-full.sh
+
+./test-acer-sfx14-51g-platform-full.sh
+```
+
+The script was written specifically for this laptop and was used throughout development to validate every public feature exposed by the driver.
+
+---
+
+## Notes About Platform Profiles
+
+The firmware internally maintains multiple representations of platform-profile state.
+
+During reverse-engineering, a secondary firmware state variable was identified inside the EC and used extensively for validation and consistency checking.
+
+This driver uses Acer's documented firmware protocol rather than directly manipulating EC state.
+
+This keeps the implementation closer to the firmware's intended control path and reduces the risk of desynchronizing internal firmware variables.
+
+---
+
+## Acknowledgements
+
+This project took heavy inspiration from https://github.com/TenSeventy7/acer-wmi-ext.

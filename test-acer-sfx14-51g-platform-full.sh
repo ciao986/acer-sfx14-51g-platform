@@ -26,6 +26,9 @@ readonly CONCURRENT_ROUNDS="${CONCURRENT_ROUNDS:-250}"
 readonly LOAD_CYCLES="${LOAD_CYCLES:-20}"
 readonly POST_RESUME_ROUNDS="${POST_RESUME_ROUNDS:-50}"
 readonly OUT_DIR="${OUT_DIR:-.}"
+readonly DO_PERM_CHECK="${DO_PERM_CHECK:-auto}"
+readonly EC_IO="${EC_IO:-/sys/kernel/debug/ec/ec0/io}"
+readonly PERM_OFFSET=$((0x45))
 
 stamp=$(date +'%Y%m%d-%H%M%S')
 readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.0-test-${stamp}.log}"
@@ -65,6 +68,58 @@ valid_adapter_rating() {
     local value=$1
     [[ "$value" =~ ^[0-9]+$ ]] || return 1
     (( value >= 0 && value <= 255000 ))
+}
+
+profile_to_perm() {
+    case "$1" in
+        balanced) echo 1 ;;
+        quiet) echo 2 ;;
+        performance) echo 3 ;;
+        *) return 1 ;;
+    esac
+}
+
+perm_check_available() {
+    case "$DO_PERM_CHECK" in
+        0|no|false) return 1 ;;
+        1|yes|true) return 0 ;;
+        auto) sudo test -r "$EC_IO" ;;
+        *) echo "Invalid DO_PERM_CHECK=$DO_PERM_CHECK" >&2; return 2 ;;
+    esac
+}
+
+read_perm() {
+    local raw
+    raw=$(sudo dd if="$EC_IO" bs=1 skip="$PERM_OFFSET" count=1 status=none | od -An -tu1)
+    raw=${raw//[[:space:]]/}
+    [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+    (( raw >= 1 && raw <= 3 )) || {
+        printf 'Invalid PERM value at EC 0x45: %s\n' "$raw" >&2
+        return 1
+    }
+    printf '%s\n' "$raw"
+}
+
+check_profile_perm_consistency() {
+    local context=$1 profile expected actual
+    if ! perm_check_available; then
+        if [[ "$DO_PERM_CHECK" != auto && "$DO_PERM_CHECK" != 0 &&
+              "$DO_PERM_CHECK" != no && "$DO_PERM_CHECK" != false ]]; then
+            echo "PERM checking requested but EC I/O is unavailable: $EC_IO" >&2
+            return 1
+        fi
+        return 0
+    fi
+    profile=$(read_value "$PROFILE")
+    expected=$(profile_to_perm "$profile")
+    actual=$(read_perm)
+    printf 'PERM context=%s profile=%s expected=%s observed=%s\n' \
+        "$context" "$profile" "$expected" "$actual"
+    [[ "$actual" == "$expected" ]] || {
+        printf 'Profile/PERM mismatch at %s: profile=%s PERM=%s\n' \
+            "$context" "$profile" "$actual" >&2
+        return 1
+    }
 }
 
 find_hwmon() {
@@ -315,7 +370,10 @@ main() {
     valid_adapter_rating "$original_adapter"
 
     section 'GETTERS AND HWMON'
-    check_temperatures_once && pass 'basic getters and hwmon ranges'
+    check_temperatures_once
+    check_psu_hwmon_once
+    check_profile_perm_consistency baseline
+    pass 'basic getters, temperature/PSU hwmon, and profile context'
     sequential_stress && pass 'sequential getter stress'
     concurrent_stress && pass 'concurrent getter stress'
 
@@ -329,7 +387,9 @@ main() {
         [[ $(read_value "$PROFILE") == "$requested" ]]
         [[ $(read_value "$HEALTH") == "$original_health" ]]
         [[ $(read_value "$CALIBRATION") == "$original_calibration" ]]
+        check_profile_perm_consistency "profile-${requested}"
         check_temperatures_once
+        check_psu_hwmon_once
     done
     restore_profile
     pass 'profile cycle quiet/balanced/performance and restoration'
@@ -398,8 +458,7 @@ main() {
         sync
         log 'Suspending now; wake the machine normally.'
         sudo systemctl suspend
-        printf '
-Resume detected. Press Enter when the system is fully awake to run post-suspend checks...'
+        printf '\nResume detected. Wait until the system is fully awake, then press Enter to continue.\n'
         IFS= read -r _
         sleep 2
         module_loaded
@@ -408,7 +467,12 @@ Resume detected. Press Enter when the system is fully awake to run post-suspend 
         printf 'profile before_resume=%s after_resume=%s\n' "$before_resume_profile" "$after_resume_profile"
         [[ $(read_value "$HEALTH") == "$original_health" ]]
         [[ $(read_value "$CALIBRATION") == "$original_calibration" ]]
-        for ((i=1; i<=POST_RESUME_ROUNDS; i++)); do check_temperatures_once >/dev/null; done
+        check_profile_perm_consistency post-resume
+        check_psu_hwmon_once
+        for ((i=1; i<=POST_RESUME_ROUNDS; i++)); do
+            check_temperatures_once >/dev/null
+            check_psu_hwmon_once >/dev/null
+        done
         pass 'suspend/resume state and post-resume getters'
     else
         echo 'SKIP: suspend disabled with DO_SUSPEND=0'
@@ -439,6 +503,7 @@ Resume detected. Press Enter when the system is fully awake to run post-suspend 
     valid_adapter_rating "$(read_value "$ADAPTER")"
     check_temperatures_once
     check_psu_hwmon_once
+    check_profile_perm_consistency final
     kernel_log_audit
     pass 'final state restoration and clean kernel log'
 
