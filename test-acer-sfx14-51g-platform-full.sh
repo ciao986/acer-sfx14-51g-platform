@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Full validation suite for acer-sfx14-51g-platform v0.2.1
+# Full validation suite for acer-sfx14-51g-platform v0.2.2
 #
 # Run as a normal user from the module build directory. The script uses sudo
 # internally, records all output to a timestamped log, restores changed state,
@@ -11,7 +11,7 @@ IFS=$'\n\t'
 
 readonly MOD="acer_sfx14_51g_platform"
 readonly KO="${KO:-./acer-sfx14-51g-platform.ko}"
-readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.2.1}"
+readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.2.2}"
 readonly PDEV="/sys/bus/platform/devices/acer-sfx14-51g-platform"
 readonly PROFILE="/sys/firmware/acpi/platform_profile"
 readonly PROFILE_CHOICES="/sys/firmware/acpi/platform_profile_choices"
@@ -28,8 +28,8 @@ readonly POST_RESUME_ROUNDS="${POST_RESUME_ROUNDS:-50}"
 readonly OUT_DIR="${OUT_DIR:-.}"
 
 stamp=$(date +'%Y%m%d-%H%M%S')
-readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.1-test-${stamp}.log}"
-readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.1-test-${stamp}.summary}"
+readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.2-test-${stamp}.log}"
+readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.2-test-${stamp}.summary}"
 
 started_at=""
 original_profile=""
@@ -59,6 +59,12 @@ read_value() {
     local path=$1
     [[ -r "$path" ]] || { printf 'Unreadable path: %s\n' "$path" >&2; return 1; }
     cat "$path"
+}
+
+valid_adapter_rating() {
+    local value=$1
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    (( value >= 0 && value <= 255000 ))
 }
 
 find_hwmon() {
@@ -166,7 +172,7 @@ check_static_source() {
     [[ -r "$source" ]] || { echo 'Source file not found; skipping source checks'; return 0; }
     bad=$(grep -InE 'debugfs|misc_register|unlocked_ioctl|proc_create|ec_write|ioremap|outb|request_region' "$source" || true)
     [[ -z "$bad" ]] || { printf '%s\n' "$bad" >&2; return 1; }
-    grep -q 'MODULE_VERSION("0.2.0")' "$source"
+    grep -q 'MODULE_VERSION("0.2.2")' "$source"
     ! grep -qE 'BATTERY_SET_ATTEMPTS|BATTERY_VERIFY_ATTEMPTS|response\.result' "$source"
 }
 
@@ -183,7 +189,7 @@ check_interfaces() {
 check_state_unchanged_except_health() {
     [[ $(read_value "$CALIBRATION") == "$original_calibration" ]]
     [[ $(read_value "$PROFILE") == "$original_profile" ]]
-    [[ $(read_value "$ADAPTER") == "$original_adapter" ]]
+    valid_adapter_rating "$(read_value "$ADAPTER")"
 }
 
 check_temperatures_once() {
@@ -211,6 +217,7 @@ sequential_stress() {
         read_value "$PROFILE" >/dev/null
         read_value "$HEALTH" >/dev/null
         read_value "$CALIBRATION" >/dev/null
+        valid_adapter_rating "$(read_value "$ADAPTER")"
         sleep 0.02
     done
     printf 'sequential_temperature_reads=%d\n' "$count"
@@ -228,7 +235,8 @@ concurrent_stress() {
                 cat "$hwmon/temp3_input" >/dev/null &&
                 cat "$PROFILE" >/dev/null &&
                 cat "$HEALTH" >/dev/null &&
-                cat "$CALIBRATION" >/dev/null || exit 1
+                cat "$CALIBRATION" >/dev/null &&
+                valid_adapter_rating "$(cat "$ADAPTER")" || exit 1
             done
             printf 'worker=%d passed\n' "$worker"
         ) &
@@ -287,7 +295,7 @@ main() {
     [[ "$original_profile" =~ ^(quiet|balanced|performance)$ ]]
     [[ "$original_health" =~ ^[01]$ ]]
     [[ "$original_calibration" =~ ^[01]$ ]]
-    [[ "$original_adapter" =~ ^[0-9]+$ ]]
+    valid_adapter_rating "$original_adapter"
 
     section 'GETTERS AND HWMON'
     check_temperatures_once && pass 'basic getters and hwmon ranges'
@@ -398,7 +406,7 @@ main() {
             return 1
         fi
         [[ -d "$PDEV" ]]
-        cat "$PROFILE" "$HEALTH" "$CALIBRATION" >/dev/null
+        cat "$PROFILE" "$HEALTH" "$CALIBRATION" "$ADAPTER" >/dev/null
     done
     pass "${LOAD_CYCLES} unload/load cycles"
 
@@ -406,7 +414,7 @@ main() {
     [[ $(read_value "$PROFILE") == "$original_profile" ]]
     [[ $(read_value "$HEALTH") == "$original_health" ]]
     [[ $(read_value "$CALIBRATION") == "$original_calibration" ]]
-    [[ $(read_value "$ADAPTER") == "$original_adapter" ]]
+    valid_adapter_rating "$(read_value "$ADAPTER")"
     check_temperatures_once
     kernel_log_audit
     pass 'final state restoration and clean kernel log'

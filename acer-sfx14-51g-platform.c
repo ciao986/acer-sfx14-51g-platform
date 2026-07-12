@@ -46,6 +46,9 @@
 #define BH_TEMP_AMBIENT  0x03
 #define BH_TEMP_GPU_SIDE 0x0a
 
+#define ACER_ARTG_PATH "\\_SB.TPWR.ARTG"
+#define ACER_ADAPTER_RATING_MAX_MW 255000ULL
+
 struct acer_battery_get_request {
 	u8 battery_no;
 	u8 function_query;
@@ -367,6 +370,26 @@ static int acer_bh_temp_retry_locked(u8 selector, long *millideg)
 	return ret;
 }
 
+static int acer_adapter_rating_mw_locked(unsigned long *rating_mw)
+{
+	unsigned long long value;
+	acpi_status status;
+
+	status = acpi_evaluate_integer(NULL, ACER_ARTG_PATH, NULL, &value);
+	if (ACPI_FAILURE(status))
+		return -EIO;
+
+	/*
+	 * ARTG returns 0 when no PSU is connected.  Otherwise it returns
+	 * the 8-bit EC ADPW value multiplied by 1000, in milliwatts.
+	 */
+	if (value > ACER_ADAPTER_RATING_MAX_MW)
+		return -ERANGE;
+
+	*rating_mw = value;
+	return 0;
+}
+
 static umode_t acer_hwmon_is_visible(const void *drvdata,
 				     enum hwmon_sensor_types type,
 				     u32 attr, int channel)
@@ -514,8 +537,17 @@ static DEVICE_ATTR_RW(battery_calibration_mode);
 static ssize_t adapter_rating_mw_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
-	/* Firmware ADPW=100 and ARTG returns ADPW*1000 on this exact model. */
-	return sysfs_emit(buf, "100000\n");
+	struct acer_sfx14_data *data = dev_get_drvdata(dev);
+	unsigned long rating_mw;
+	int ret;
+
+	mutex_lock(&data->firmware_lock);
+	ret = acer_adapter_rating_mw_locked(&rating_mw);
+	mutex_unlock(&data->firmware_lock);
+	if (ret)
+		return ret;
+
+	return sysfs_emit(buf, "%lu\n", rating_mw);
 }
 static DEVICE_ATTR_RO(adapter_rating_mw);
 
@@ -624,7 +656,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.2.1");
+MODULE_VERSION("0.2.2");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
