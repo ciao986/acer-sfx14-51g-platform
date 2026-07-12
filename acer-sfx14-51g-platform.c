@@ -135,7 +135,9 @@ static int acer_wmi_eval_buffer(const char *guid, u32 method,
 		ret = -EPROTO;
 		goto out;
 	}
-	if (!obj->buffer.pointer || obj->buffer.length != response_len) {
+	if (!obj->buffer.pointer || obj->buffer.length < response_len) {
+		pr_err("WMI %s method %u returned %u bytes, expected at least %zu\n",
+		       guid, method, obj->buffer.length, response_len);
 		ret = -EMSGSIZE;
 		goto out;
 	}
@@ -556,6 +558,12 @@ static int __init acer_sfx14_init(void)
 		platform_driver_unregister(&acer_sfx14_driver);
 		return ret;
 	}
+	if (!platform_get_drvdata(acer_sfx14_pdev)) {
+		pr_err("platform device was created but probe did not bind\n");
+		platform_device_unregister(acer_sfx14_pdev);
+		platform_driver_unregister(&acer_sfx14_driver);
+		return -ENODEV;
+	}
 	return 0;
 }
 
@@ -571,7 +579,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.1.4");
+MODULE_VERSION("0.1.5");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
