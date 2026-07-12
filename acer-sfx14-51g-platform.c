@@ -397,6 +397,9 @@ static umode_t acer_hwmon_is_visible(const void *drvdata,
 	if (type == hwmon_temp && (attr == hwmon_temp_input ||
 				    attr == hwmon_temp_label) && channel < 3)
 		return 0444;
+	if (type == hwmon_power && (attr == hwmon_power_input ||
+				     attr == hwmon_power_label) && channel == 0)
+		return 0444;
 	return 0;
 }
 
@@ -407,7 +410,20 @@ static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		BH_TEMP_CPU_SIDE, BH_TEMP_GPU_SIDE, BH_TEMP_AMBIENT,
 	};
 	struct acer_sfx14_data *data = dev_get_drvdata(dev);
+	unsigned long rating_mw;
 	int ret;
+
+	if (type == hwmon_power && attr == hwmon_power_input && channel == 0) {
+		mutex_lock(&data->firmware_lock);
+		ret = acer_adapter_rating_mw_locked(&rating_mw);
+		mutex_unlock(&data->firmware_lock);
+		if (ret)
+			return ret;
+
+		/* The hwmon power ABI exposes power values in microwatts. */
+		*value = rating_mw * 1000UL;
+		return 0;
+	}
 
 	if (type != hwmon_temp || attr != hwmon_temp_input || channel >= ARRAY_SIZE(selectors))
 		return -EOPNOTSUPP;
@@ -440,6 +456,10 @@ static int acer_hwmon_read_string(struct device *dev,
 		"CPU-side", "GPU-side", "Internal ambient",
 	};
 
+	if (type == hwmon_power && attr == hwmon_power_label && channel == 0) {
+		*str = "Connected PSU rating";
+		return 0;
+	}
 	if (type != hwmon_temp || attr != hwmon_temp_label || channel >= ARRAY_SIZE(labels))
 		return -EOPNOTSUPP;
 	*str = labels[channel];
@@ -457,6 +477,8 @@ static const struct hwmon_channel_info * const acer_hwmon_info[] = {
 		HWMON_T_INPUT | HWMON_T_LABEL,
 		HWMON_T_INPUT | HWMON_T_LABEL,
 		HWMON_T_INPUT | HWMON_T_LABEL),
+	HWMON_CHANNEL_INFO(power,
+		HWMON_P_INPUT | HWMON_P_LABEL),
 	NULL
 };
 
@@ -656,7 +678,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.2.2");
+MODULE_VERSION("0.3.0");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);

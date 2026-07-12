@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Full validation suite for acer-sfx14-51g-platform v0.2.2
+# Full validation suite for acer-sfx14-51g-platform v0.3.0
 #
 # Run as a normal user from the module build directory. The script uses sudo
 # internally, records all output to a timestamped log, restores changed state,
@@ -11,7 +11,7 @@ IFS=$'\n\t'
 
 readonly MOD="acer_sfx14_51g_platform"
 readonly KO="${KO:-./acer-sfx14-51g-platform.ko}"
-readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.2.2}"
+readonly EXPECTED_VERSION="${EXPECTED_VERSION:-0.3.0}"
 readonly PDEV="/sys/bus/platform/devices/acer-sfx14-51g-platform"
 readonly PROFILE="/sys/firmware/acpi/platform_profile"
 readonly PROFILE_CHOICES="/sys/firmware/acpi/platform_profile_choices"
@@ -28,8 +28,8 @@ readonly POST_RESUME_ROUNDS="${POST_RESUME_ROUNDS:-50}"
 readonly OUT_DIR="${OUT_DIR:-.}"
 
 stamp=$(date +'%Y%m%d-%H%M%S')
-readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.2-test-${stamp}.log}"
-readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.2.2-test-${stamp}.summary}"
+readonly LOG_FILE="${LOG_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.0-test-${stamp}.log}"
+readonly SUMMARY_FILE="${SUMMARY_FILE:-${OUT_DIR}/acer-sfx14-51g-platform-v0.3.0-test-${stamp}.summary}"
 
 started_at=""
 original_profile=""
@@ -172,7 +172,7 @@ check_static_source() {
     [[ -r "$source" ]] || { echo 'Source file not found; skipping source checks'; return 0; }
     bad=$(grep -InE 'debugfs|misc_register|unlocked_ioctl|proc_create|ec_write|ioremap|outb|request_region' "$source" || true)
     [[ -z "$bad" ]] || { printf '%s\n' "$bad" >&2; return 1; }
-    grep -q 'MODULE_VERSION("0.2.2")' "$source"
+    grep -q 'MODULE_VERSION("0.3.0")' "$source"
     ! grep -qE 'BATTERY_SET_ATTEMPTS|BATTERY_VERIFY_ATTEMPTS|response\.result' "$source"
 }
 
@@ -204,6 +204,21 @@ check_temperatures_once() {
     done
 }
 
+check_psu_hwmon_once() {
+    local adapter_mw power_uw label
+    find_hwmon
+    adapter_mw=$(read_value "$ADAPTER")
+    power_uw=$(read_value "$hwmon/power1_input")
+    label=$(read_value "$hwmon/power1_label")
+    valid_adapter_rating "$adapter_mw"
+    [[ "$power_uw" =~ ^[0-9]+$ ]]
+    [[ "$power_uw" == $((adapter_mw * 1000)) ]]
+    [[ "$label" == 'Connected PSU rating' ]]
+    printf 'power1 %s=%d uW (%d.%03d W)\n' \
+        "$label" "$power_uw" "$((power_uw / 1000000))" \
+        "$(((power_uw % 1000000) / 1000))"
+}
+
 sequential_stress() {
     local i n value count=0
     find_hwmon
@@ -218,6 +233,7 @@ sequential_stress() {
         read_value "$HEALTH" >/dev/null
         read_value "$CALIBRATION" >/dev/null
         valid_adapter_rating "$(read_value "$ADAPTER")"
+        read_value "$hwmon/power1_input" >/dev/null
         sleep 0.02
     done
     printf 'sequential_temperature_reads=%d\n' "$count"
@@ -236,7 +252,8 @@ concurrent_stress() {
                 cat "$PROFILE" >/dev/null &&
                 cat "$HEALTH" >/dev/null &&
                 cat "$CALIBRATION" >/dev/null &&
-                valid_adapter_rating "$(cat "$ADAPTER")" || exit 1
+                valid_adapter_rating "$(cat "$ADAPTER")" &&
+                cat "$hwmon/power1_input" >/dev/null || exit 1
             done
             printf 'worker=%d passed\n' "$worker"
         ) &
@@ -381,6 +398,9 @@ main() {
         sync
         log 'Suspending now; wake the machine normally.'
         sudo systemctl suspend
+        printf '
+Resume detected. Press Enter when the system is fully awake to run post-suspend checks...'
+        IFS= read -r _
         sleep 2
         module_loaded
         check_interfaces
@@ -407,6 +427,8 @@ main() {
         fi
         [[ -d "$PDEV" ]]
         cat "$PROFILE" "$HEALTH" "$CALIBRATION" "$ADAPTER" >/dev/null
+        find_hwmon
+        cat "$hwmon/power1_input" >/dev/null
     done
     pass "${LOAD_CYCLES} unload/load cycles"
 
@@ -416,6 +438,7 @@ main() {
     [[ $(read_value "$CALIBRATION") == "$original_calibration" ]]
     valid_adapter_rating "$(read_value "$ADAPTER")"
     check_temperatures_once
+    check_psu_hwmon_once
     kernel_log_audit
     pass 'final state restoration and clean kernel log'
 
