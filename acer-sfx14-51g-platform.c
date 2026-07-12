@@ -12,6 +12,7 @@
 #include <linux/dmi.h>
 #include <linux/hwmon.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -90,6 +91,9 @@ struct acer_sfx14_data {
 	struct device *hwmon_dev;
 	bool health_available;
 	bool calibration_available;
+	long temp_cache[3];
+	unsigned long temp_cache_jiffies[3];
+	bool temp_cache_valid[3];
 };
 
 static struct platform_device *acer_sfx14_pdev;
@@ -359,6 +363,19 @@ static int acer_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		usleep_range(10000, 12000);
 		ret = acer_bh_temp_locked(selectors[channel], value);
 	}
+
+	if (!ret) {
+		data->temp_cache[channel] = *value;
+		data->temp_cache_jiffies[channel] = jiffies;
+		data->temp_cache_valid[channel] = true;
+	} else if ((ret == -ERANGE || ret == -EIO) &&
+		   data->temp_cache_valid[channel] &&
+		   time_before(jiffies,
+			       data->temp_cache_jiffies[channel] + 2 * HZ)) {
+		/* Use a last-good sample for at most two seconds. */
+		*value = data->temp_cache[channel];
+		ret = 0;
+	}
 	mutex_unlock(&data->firmware_lock);
 	return ret;
 }
@@ -579,7 +596,7 @@ module_exit(acer_sfx14_exit);
 MODULE_DESCRIPTION("Acer Swift SFX14-51G platform profile, battery and sensor driver");
 MODULE_AUTHOR("ciao986");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.1.5");
+MODULE_VERSION("0.1.6");
 MODULE_ALIAS("wmi:" ACER_BATTERY_GUID);
 MODULE_ALIAS("wmi:" ACER_PROFILE_GUID);
 MODULE_ALIAS("wmi:" ACER_BH_GUID);
